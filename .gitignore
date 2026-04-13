@@ -1,0 +1,19 @@
+cd ~/Documents/Buku/5.\ Retail/Markov\ Simulation/
+
+cat > .gitignore << 'EOF'
+# sensitive
+sa-key.json
+*.json
+
+# data files — too large / regenerable
+markov_transitions.csv
+markov_analysis.csv
+
+# html artifacts
+*.html
+
+# python cache
+__pycache__/
+*.pyc
+.DS_Store
+EOF
