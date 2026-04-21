@@ -54,8 +54,9 @@ scored AS (
       WHEN weeks_since_first_tx BETWEEN 0  AND 1  THEN 'new_user'
       WHEN weeks_since_first_tx BETWEEN 2  AND 4  THEN 'early'
       WHEN weeks_since_first_tx BETWEEN 5  AND 12 THEN 'growing'
-      WHEN weeks_since_first_tx BETWEEN 13 AND 26 THEN 'mature'
-      WHEN weeks_since_first_tx >= 27             THEN 'veteran'
+      WHEN weeks_since_first_tx >= 13             THEN 'mature'
+      -- WHEN weeks_since_first_tx BETWEEN 13 AND 26 THEN 'mature'
+      -- WHEN weeks_since_first_tx >= 27             THEN 'veteran'
     END AS tenure_bucket
 
   FROM latest_two
