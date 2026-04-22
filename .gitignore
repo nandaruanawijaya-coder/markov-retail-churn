@@ -8,6 +8,7 @@ sa-key.json
 # data files — too large / regenerable
 markov_transitions.csv
 markov_analysis.csv
+merchant_scores.csv
 
 # html artifacts
 *.html
