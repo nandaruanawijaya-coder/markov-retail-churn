@@ -1,0 +1,16 @@
+# This file specifies files to exclude from Cloud Builds
+.git
+.gitignore
+.DS_Store
+*.pyc
+__pycache__/
+.pytest_cache/
+.vscode/
+*.egg-info/
+.env
+.env.local
+node_modules/
+intervention_framework.html
+markov_analysis_results.html
+DEPLOY_CLOUD_RUN.md
+*.md

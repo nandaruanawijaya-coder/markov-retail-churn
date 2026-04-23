@@ -103,7 +103,7 @@ def step4_run_scoring():
 
     from google.cloud import bigquery
 
-    sql_path = WORKING_DIR / "scoring_bq.sql"
+    sql_path = WORKING_DIR / "scoring_query.sql"
     if not sql_path.exists():
         raise FileNotFoundError(f"SQL file not found: {sql_path}")
 
