@@ -5,30 +5,26 @@
 - Active GCP project with Cloud Run and Cloud Scheduler enabled
 - BigQuery access in your project
 
-## Step 1: Create Service Account
+## Step 1: Set Variables and Verify Service Account
+
+The pipeline uses the existing `data-team-ml-model` service account (no new account is created).
 
 ```bash
-# Set your GCP project
 export PROJECT_ID="ledger-fcc1e"
-export SERVICE_ACCOUNT="markov-pipeline-sa"
+export SERVICE_ACCOUNT_EMAIL="data-team-ml-model@${PROJECT_ID}.iam.gserviceaccount.com"
 
-# Create service account
-gcloud iam service-accounts create $SERVICE_ACCOUNT \
-  --display-name="Markov Churn Pipeline Service Account" \
-  --project=$PROJECT_ID
-
-# Grant BigQuery roles
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --role="roles/bigquery.admin"
+# Verify it exists
+gcloud iam service-accounts describe $SERVICE_ACCOUNT_EMAIL --project=$PROJECT_ID
 ```
+
+The service account needs BigQuery access (read source tables, write to `temp_amal`) and Cloud Run invoker permission (used by Cloud Scheduler).
 
 ## Step 2: Build and Deploy to Cloud Run
 
 ```bash
 # Set variables
 export SERVICE_NAME="markov-churn-pipeline"
-export REGION="us-central1"  # Change if needed
+export REGION="asia-southeast1"  # Change if needed
 export IMAGE="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
 
 # Build and push image
@@ -42,7 +38,7 @@ gcloud run deploy $SERVICE_NAME \
   --timeout=3600 \
   --memory=2Gi \
   --cpu=2 \
-  --service-account="${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --service-account="$SERVICE_ACCOUNT_EMAIL" \
   --project=$PROJECT_ID
 ```
 
@@ -54,7 +50,7 @@ gcloud scheduler jobs create http markov-pipeline-monthly \
   --location=$REGION \
   --schedule="0 2 1 * *" \
   --uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${SERVICE_NAME}:run" \
-  --oidc-service-account-email="${SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --oidc-service-account-email="$SERVICE_ACCOUNT_EMAIL" \
   --oidc-token-audience="https://${REGION}-run.googleapis.com/${SERVICE_NAME}" \
   --http-method=POST \
   --project=$PROJECT_ID
