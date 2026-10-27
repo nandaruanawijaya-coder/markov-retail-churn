@@ -24,10 +24,11 @@ Markov Chain churn scoring pipeline for QRIS Soundbox merchants. Runs as a month
 ### Quick Start
 ```bash
 export PROJECT_ID="ledger-fcc1e"
-export REGION="us-central1"
+export REGION="asia-southeast1"  # default if unset
 
 ./deploy-cloud-run.sh
 ```
+Uses the existing `data-team-ml-model` service account by default; override with `SERVICE_ACCOUNT_EMAIL`.
 
 ### Manual Setup
 See [DEPLOY_CLOUD_RUN.md](DEPLOY_CLOUD_RUN.md) for detailed steps.
@@ -39,5 +40,5 @@ See [DEPLOY_CLOUD_RUN.md](DEPLOY_CLOUD_RUN.md) for detailed steps.
 
 ## Trigger Manually (Testing)
 ```bash
-gcloud scheduler jobs run markov-pipeline-monthly --location=us-central1
+gcloud scheduler jobs run markov-pipeline-monthly --location=asia-southeast1
 ```
