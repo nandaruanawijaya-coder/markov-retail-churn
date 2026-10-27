@@ -4,11 +4,18 @@ Scores each merchant using (prev_tier, current_tier) Markov state.
 
 Inputs:
   - scoring_query.sql   : pulls latest 2 weeks per merchant from BigQuery
-  - markov_analysis.csv : churn probabilities per (segment, tenure_bucket, prev_tier, current_tier)
+  - MATRIX_TABLE        : churn probabilities per (segment, tenure_bucket,
+                          prev_tier, current_tier), refreshed monthly.
+                          --analysis-csv reads a local CSV instead.
 
 Output:
-  - BigQuery table : BQ_OUTPUT_TABLE (appended with snapshot_date = today)
+  - BigQuery table : BQ_OUTPUT_TABLE (appended with snapshot_date = today;
+                     re-running on the same day replaces that day's snapshot)
   - merchant_scores.csv : local backup
+
+Usage:
+    python merchant_scoring.py
+    python merchant_scoring.py --dry-run --analysis-csv markov_analysis.csv
 
 Risk segments (based on 4-week churn score):
   critical  >= 75%
@@ -25,18 +32,20 @@ Auth:
     gcloud auth application-default login
 """
 
+import argparse
 from pathlib import Path
 from datetime import date
 import pandas as pd
+from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
 from segments import BUCKET_TO_SEGMENT, TENURE_ORDER
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PROJECT_ID     = "ledger-fcc1e"          # 👈 change this
-BQ_OUTPUT_TABLE = "retail_payment_base.merchant_churn_scores"  # 👈 change this
+BQ_OUTPUT_TABLE = "temp_amal.merchant_churn_scores_v2"
+MATRIX_TABLE    = "temp_amal.markov_analysis_v2"   # written by the monthly job
 SQL_FILE       = Path(__file__).parent / "scoring_query.sql"
-ANALYSIS_CSV   = Path(__file__).parent / "markov_analysis.csv"
 OUTPUT_CSV     = "merchant_scores.csv"
 
 TIER_LABEL_MAP = {0: "0", 1: "1-2", 2: "3-4", 3: "5-6", 4: "7"}
@@ -80,11 +89,15 @@ def fetch_merchant_states(client: bigquery.Client, query: str) -> pd.DataFrame:
     return df
 
 
-def load_analysis(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        raise FileNotFoundError(f"Analysis CSV not found: {path}")
-    print(f"Loading Markov analysis from: {path}")
-    df = pd.read_csv(path)
+def load_analysis(client: bigquery.Client, path: Path = None) -> pd.DataFrame:
+    if path is not None:
+        if not path.exists():
+            raise FileNotFoundError(f"Analysis CSV not found: {path}")
+        print(f"Loading Markov analysis from: {path}")
+        df = pd.read_csv(path)
+    else:
+        print(f"Loading Markov analysis from BigQuery: {MATRIX_TABLE}")
+        df = client.query(f"SELECT * FROM `{MATRIX_TABLE}`").to_dataframe()
     df["prev_tier"]    = df["prev_tier"].astype(str)
     df["current_tier"] = df["current_tier"].astype(str)
     print(f"  -> {len(df):,} rows loaded")
@@ -180,11 +193,21 @@ def score_merchants(
 def write_to_bigquery(client: bigquery.Client, df: pd.DataFrame):
     print(f"\nWriting {len(df):,} rows to BigQuery: {BQ_OUTPUT_TABLE}")
 
+    # make re-runs (retries, manual re-trigger) idempotent for the same snapshot
+    snapshot_date = df["snapshot_date"].iloc[0]
+    try:
+        client.query(
+            f"DELETE FROM `{BQ_OUTPUT_TABLE}` WHERE snapshot_date = @d",
+            job_config=bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("d", "DATE", snapshot_date)
+            ]),
+        ).result()
+    except NotFound:
+        pass  # first run: table does not exist yet
+
     job_config = bigquery.LoadJobConfig(
         schema=BQ_SCHEMA,
         write_disposition=bigquery.WriteDisposition.WRITE_APPEND,  # append each snapshot
-        # lets the load add the `segment` column to an existing table
-        schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
     )
 
     job = client.load_table_from_dataframe(df, BQ_OUTPUT_TABLE, job_config=job_config)
@@ -242,15 +265,26 @@ def print_summary(df: pd.DataFrame):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
+    parser = argparse.ArgumentParser(description="Score merchants with the Markov matrices")
+    parser.add_argument("--analysis-csv", type=Path,
+                        help="read matrices from a local CSV instead of BigQuery")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="score and print the summary, but do not write anywhere")
+    args = parser.parse_args()
+
     snapshot_date = date.today()
     client        = bigquery.Client(project=PROJECT_ID)
 
     query        = load_query(SQL_FILE)
     df_merchants = fetch_merchant_states(client, query)
-    df_analysis  = load_analysis(ANALYSIS_CSV)
+    df_analysis  = load_analysis(client, args.analysis_csv)
     df_scores    = score_merchants(df_merchants, df_analysis, snapshot_date)
 
     print_summary(df_scores)
+
+    if args.dry_run:
+        print("\n(dry run: nothing written)")
+        return
 
     # Save to BigQuery
     write_to_bigquery(client, df_scores)

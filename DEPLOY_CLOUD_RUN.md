@@ -1,96 +1,66 @@
-# Deploy to Cloud Run (Monthly Scheduled Job)
+# Deploy to Cloud Run (Scheduled Jobs)
+
+One image, two Cloud Run **Jobs**, each triggered by Cloud Scheduler:
+
+| Job | Mode | Schedule (UTC) | What it does |
+|---|---|---|---|
+| `markov-matrices-monthly` | `--mode monthly` | 1st of month, 02:00 | Rebuild transitions, run Monte Carlo, upload matrices to `temp_amal.markov_analysis_v2` |
+| `merchant-scoring-weekly` | `--mode weekly` | Monday, 03:00 (10:00 WIB) | Score merchants against the matrices, append a snapshot to `temp_amal.merchant_churn_scores_v2` |
+
+Scoring is weekly because tiers come from the last complete Monday–Sunday week and churn is a 3-week-zero event; the matrices change slowly, so they are refreshed monthly.
 
 ## Prerequisites
-- `gcloud` CLI installed and configured
-- Active GCP project with Cloud Run and Cloud Scheduler enabled
-- BigQuery access in your project
+- `gcloud` CLI installed and authenticated
+- Cloud Run, Cloud Scheduler, Cloud Build and Artifact Registry APIs enabled
+- Service account `data-team-ml-model@${PROJECT_ID}.iam.gserviceaccount.com` (the script verifies it exists; it does not create it or change IAM) with:
+  - BigQuery read on `retail_payment_base`, and data editor + job user for `temp_amal`
+  - permission to run the two jobs (e.g. `roles/run.invoker` on them) so Cloud Scheduler can trigger them
 
-## Step 1: Set Variables and Verify Service Account
-
-The pipeline uses the existing `data-team-ml-model` service account (no new account is created).
+## Deploy
 
 ```bash
 export PROJECT_ID="ledger-fcc1e"
-export SERVICE_ACCOUNT_EMAIL="data-team-ml-model@${PROJECT_ID}.iam.gserviceaccount.com"
-
-# Verify it exists
-gcloud iam service-accounts describe $SERVICE_ACCOUNT_EMAIL --project=$PROJECT_ID
+export REGION="asia-southeast1"      # default
+./deploy-cloud-run.sh
 ```
 
-The service account needs BigQuery access (read source tables, write to `temp_amal`) and Cloud Run invoker permission (used by Cloud Scheduler).
+The script builds the image, then creates or updates both jobs and both scheduler triggers. Override defaults with `SERVICE_ACCOUNT_EMAIL`, `REPO_NAME` and `IMAGE_NAME`.
 
-## Step 2: Build and Deploy to Cloud Run
+## First run
+The weekly job reads the matrices from BigQuery, so run the monthly job once first:
 
 ```bash
-# Set variables
-export SERVICE_NAME="markov-churn-pipeline"
-export REGION="asia-southeast1"  # Change if needed
-export IMAGE="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
-
-# Build and push image
-gcloud builds submit --tag=$IMAGE --project=$PROJECT_ID
-
-# Deploy to Cloud Run (as a job, not a service)
-gcloud run deploy $SERVICE_NAME \
-  --image=$IMAGE \
-  --platform=managed \
-  --region=$REGION \
-  --timeout=3600 \
-  --memory=2Gi \
-  --cpu=2 \
-  --service-account="$SERVICE_ACCOUNT_EMAIL" \
-  --project=$PROJECT_ID
+gcloud run jobs execute markov-matrices-monthly --region=$REGION --project=$PROJECT_ID --wait
+gcloud run jobs execute merchant-scoring-weekly --region=$REGION --project=$PROJECT_ID --wait
 ```
 
-## Step 3: Create Cloud Scheduler Job (Monthly)
+Re-running the weekly job on the same day replaces that day's snapshot instead of duplicating it.
+
+## Operate
 
 ```bash
-# Create Cloud Scheduler job that runs on the 1st of each month at 2 AM UTC
-gcloud scheduler jobs create http markov-pipeline-monthly \
-  --location=$REGION \
-  --schedule="0 2 1 * *" \
-  --uri="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${SERVICE_NAME}:run" \
-  --oidc-service-account-email="$SERVICE_ACCOUNT_EMAIL" \
-  --oidc-token-audience="https://${REGION}-run.googleapis.com/${SERVICE_NAME}" \
-  --http-method=POST \
-  --project=$PROJECT_ID
-```
+# Executions and status
+gcloud run jobs executions list --job=merchant-scoring-weekly --region=$REGION --project=$PROJECT_ID
 
-## Step 4: Verify Setup
+# Logs for a job
+gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="merchant-scoring-weekly"' \
+  --limit=100 --project=$PROJECT_ID
 
-```bash
-# List Cloud Run jobs
-gcloud run jobs list --project=$PROJECT_ID
-
-# List Cloud Scheduler jobs
+# Scheduler triggers
 gcloud scheduler jobs list --location=$REGION --project=$PROJECT_ID
 
-# View job details
-gcloud scheduler jobs describe markov-pipeline-monthly --location=$REGION
+# Trigger through the scheduler
+gcloud scheduler jobs run merchant-scoring-weekly-scheduler --location=$REGION --project=$PROJECT_ID
 ```
 
-## Manual Trigger (for testing)
-
-```bash
-gcloud scheduler jobs run markov-pipeline-monthly --location=$REGION --project=$PROJECT_ID
-```
-
-## View Logs
-
-```bash
-gcloud run jobs log markov-churn-pipeline --limit=100 --project=$PROJECT_ID
-```
-
-## Cron Schedule Reference
-- `0 2 1 * *` = 1st of each month at 2 AM UTC
-- Change the schedule by updating the `--schedule` parameter in the Cloud Scheduler creation command
+## Change a schedule
+Edit `MONTHLY_SCHEDULE` / `WEEKLY_SCHEDULE` in `deploy-cloud-run.sh` and re-run it.
 
 ## Cleanup
 
 ```bash
-# Delete Cloud Scheduler job
-gcloud scheduler jobs delete markov-pipeline-monthly --location=$REGION
-
-# Delete Cloud Run job
-gcloud run jobs delete markov-churn-pipeline --region=$REGION
+for j in markov-matrices-monthly merchant-scoring-weekly; do
+  gcloud scheduler jobs delete ${j}-scheduler --location=$REGION --project=$PROJECT_ID
+  gcloud run jobs delete $j --region=$REGION --project=$PROJECT_ID
+done
 ```

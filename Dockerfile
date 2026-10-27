@@ -13,6 +13,6 @@ COPY merchant_scoring.py .
 COPY upload_markov_analysis.py .
 COPY scoring_query.sql .
 COPY transition_query.sql .
-COPY markov_analysis.csv .
 
-CMD ["python", "pipeline.py"]
+ENTRYPOINT ["python", "pipeline.py"]
+CMD ["--mode", "monthly"]

@@ -1,16 +1,21 @@
 """
-QRIS Soundbox - Full Churn Scoring Pipeline (Local)
-Runs all steps in order:
-  1. Build transition matrices from BigQuery
-  2. Normalize into probability matrices
-  3. Run Monte Carlo simulations
-  4. Upload markov_analysis.csv to BigQuery
-  5. Run weekly scoring query and write to BigQuery
+QRIS Soundbox - Churn Scoring Pipeline
+Two modes, run on different schedules:
+
+  monthly  (refresh the Markov matrices)
+    1. Build transition matrices from BigQuery
+    2. Run Monte Carlo simulations
+    3. Upload markov_analysis.csv to BigQuery (temp_amal.markov_analysis_v2)
+
+  weekly   (score merchants)
+    4. Score merchants against the uploaded matrices and append a snapshot to
+       temp_amal.merchant_churn_scores_v2
 
 Usage:
-    python pipeline.py                  # run all steps
-    python pipeline.py --steps 1 2 3   # run specific steps only
-    python pipeline.py --skip-upload    # skip BQ upload (step 4)
+    python pipeline.py --mode monthly        # steps 1 2 3
+    python pipeline.py --mode weekly         # step 4
+    python pipeline.py --steps 1 2           # run specific steps only
+    python pipeline.py --mode monthly --skip-upload
 
 Requirements:
     pip install google-cloud-bigquery pandas db-dtypes pyarrow numpy
@@ -20,12 +25,15 @@ Auth:
 """
 
 import argparse
+import subprocess
+import sys
 import time
 from pathlib import Path
 from datetime import datetime
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PROJECT_ID       = "ledger-fcc1e"
+MATRIX_TABLE     = "temp_amal.markov_analysis_v2"
 WORKING_DIR      = Path(__file__).parent
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -48,87 +56,56 @@ def elapsed(start: float) -> str:
     return f"{int(s//60)}m {int(s%60)}s" if s >= 60 else f"{s:.1f}s"
 
 
-# ── Step 1: Build transition matrices ────────────────────────────────────────
+# ── Steps ─────────────────────────────────────────────────────────────────────
+def run_script(name: str):
+    result = subprocess.run(
+        [sys.executable, str(WORKING_DIR / name)],
+        capture_output=False
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"{name} failed")
+
+
 def step1_build_transitions():
     header(1, "Build transition matrices from BigQuery")
     start = time.time()
-
-    import subprocess
-    result = subprocess.run(
-        ["python", str(WORKING_DIR / "markov_transition.py")],
-        capture_output=False
-    )
-    if result.returncode != 0:
-        raise RuntimeError("markov_transition.py failed")
-
+    run_script("markov_transition.py")
     success(f"Transition matrices built — {elapsed(start)}")
 
 
-# ── Step 2 & 3: Monte Carlo simulations ──────────────────────────────────────
 def step2_run_simulations():
     header(2, "Run Monte Carlo simulations")
     start = time.time()
-
-    import subprocess
-    result = subprocess.run(
-        ["python", str(WORKING_DIR / "markov_analysis.py")],
-        capture_output=False
-    )
-    if result.returncode != 0:
-        raise RuntimeError("markov_analysis.py failed")
-
+    run_script("markov_analysis.py")
     success(f"Simulations complete — {elapsed(start)}")
 
 
-# ── Step 3: Upload markov_analysis.csv to BigQuery ───────────────────────────
 def step3_upload_analysis():
     header(3, "Upload markov_analysis.csv to BigQuery")
     start = time.time()
-
-    import subprocess
-    result = subprocess.run(
-        ["python", str(WORKING_DIR / "upload_markov_analysis.py")],
-        capture_output=False
-    )
-    if result.returncode != 0:
-        raise RuntimeError("upload_markov_analysis.py failed")
-
-    success(f"Uploaded to temp_amal.markov_analysis — {elapsed(start)}")
+    run_script("upload_markov_analysis.py")
+    success(f"Uploaded to {MATRIX_TABLE} — {elapsed(start)}")
 
 
-# ── Step 4: Run scoring query and write to BigQuery ──────────────────────────
 def step4_run_scoring():
-    header(4, "Run weekly scoring query")
+    header(4, "Score merchants")
     start = time.time()
-
-    from google.cloud import bigquery
-
-    sql_path = WORKING_DIR / "scoring_query.sql"
-    if not sql_path.exists():
-        raise FileNotFoundError(f"SQL file not found: {sql_path}")
-
-    query = sql_path.read_text()
-
-    client = bigquery.Client(project=PROJECT_ID)
-    print(f"  Running scoring query against BigQuery...")
-
-    job = client.query(query)
-    job.result()  # wait for completion
-
-    # Count rows written
-    table = client.get_table("temp_amal.merchant_churn_scores")
+    run_script("merchant_scoring.py")
     success(f"Scoring complete — {elapsed(start)}")
-    print(f"  Total rows in merchant_churn_scores: {table.num_rows:,}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(
-        description="QRIS Soundbox full churn scoring pipeline"
+        description="QRIS Soundbox churn scoring pipeline"
+    )
+    parser.add_argument(
+        "--mode", choices=["monthly", "weekly"], default="monthly",
+        help="monthly = refresh matrices (steps 1-3), weekly = score merchants (step 4)"
     )
     parser.add_argument(
         "--steps", nargs="+", type=int,
-        help="Run specific steps only (e.g. --steps 1 2 3 4)"
+        help="Run specific steps only (e.g. --steps 1 2); overrides --mode"
     )
     parser.add_argument(
         "--skip-upload", action="store_true",
@@ -140,16 +117,17 @@ def main():
         1: ("Build transition matrices",     step1_build_transitions),
         2: ("Run Monte Carlo simulations",   step2_run_simulations),
         3: ("Upload analysis to BigQuery",   step3_upload_analysis),
-        4: ("Run scoring query",             step4_run_scoring),
+        4: ("Score merchants",               step4_run_scoring),
     }
+    mode_steps = {"monthly": [1, 2, 3], "weekly": [4]}
 
     # Determine which steps to run
-    steps_to_run = args.steps if args.steps else list(all_steps.keys())
+    steps_to_run = args.steps if args.steps else list(mode_steps[args.mode])
     if args.skip_upload and 3 in steps_to_run:
         steps_to_run.remove(3)
 
     print(f"\n{'='*60}")
-    print(f"  QRIS Soundbox Churn Scoring Pipeline")
+    print(f"  QRIS Soundbox Churn Scoring Pipeline ({'custom steps' if args.steps else args.mode})")
     print(f"  Started  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Steps    : {steps_to_run}")
     print(f"{'='*60}")
@@ -179,6 +157,9 @@ def main():
     else:
         print(f"  All steps completed successfully!")
     print(f"{'='*60}\n")
+
+    if failed_steps:
+        sys.exit(1)  # non-zero so Cloud Run marks the execution as failed
 
 
 if __name__ == "__main__":

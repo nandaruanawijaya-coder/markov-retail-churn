@@ -2,7 +2,8 @@
 QRIS Soundbox - Upload Markov Analysis to BigQuery
 Reads markov_analysis.csv and writes it to a BigQuery table.
 
-This only needs to be run once (or whenever markov_analysis.csv is updated).
+Run by the monthly job after the matrices are rebuilt. The weekly scoring job
+reads this table.
 
 Requirements:
     pip install google-cloud-bigquery pandas db-dtypes pyarrow
@@ -17,7 +18,7 @@ from google.cloud import bigquery
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PROJECT_ID      = "ledger-fcc1e"
-BQ_OUTPUT_TABLE = "temp_amal.markov_analysis"   # 👈 change dataset name
+BQ_OUTPUT_TABLE = "temp_amal.markov_analysis_v2"
 INPUT_CSV       = Path(__file__).parent / "markov_analysis.csv"
 
 BQ_SCHEMA = [
