@@ -1,11 +1,52 @@
-WITH base AS (
+-- Weeks run Monday–Sunday. Only complete weeks are used (current week excluded).
+
+WITH first_tx AS (
+  -- one row per merchant: week of first settlement
   SELECT
     nmid,
-    week_start,
-    weeks_since_first_tx,
-    transaction_days
-  FROM `temp_amal.retail_weekly_rfm`
-  WHERE weeks_since_first_tx >= 2
+    DATE_TRUNC(MIN(first_settlement_date), WEEK(MONDAY)) AS first_week_start
+  FROM `retail_payment_base.retail_order_delivery_funnel`
+  WHERE first_settlement_date IS NOT NULL
+  GROUP BY nmid
+),
+
+weekly_activity AS (
+  -- distinct settlement days per merchant per week (0–7)
+  SELECT
+    nmid,
+    DATE_TRUNC(settlement_date, WEEK(MONDAY)) AS week_start,
+    COUNT(DISTINCT settlement_date)           AS transaction_days
+  FROM `retail_payment_base.retail_transaction_data`
+  WHERE settlement_date IS NOT NULL
+  GROUP BY nmid, week_start
+),
+
+week_spine AS (
+  -- every complete week from first settlement week onward, so inactive weeks
+  -- show up as transaction_days = 0 (tier 0) instead of missing rows
+  SELECT
+    f.nmid,
+    f.first_week_start,
+    week_start
+  FROM first_tx f,
+  UNNEST(GENERATE_DATE_ARRAY(
+    f.first_week_start,
+    DATE_SUB(DATE_TRUNC(CURRENT_DATE('Asia/Jakarta'), WEEK(MONDAY)), INTERVAL 1 WEEK),
+    INTERVAL 1 WEEK
+  )) AS week_start
+),
+
+base AS (
+  SELECT
+    s.nmid,
+    s.week_start,
+    DATE_DIFF(s.week_start, s.first_week_start, WEEK(MONDAY)) AS weeks_since_first_tx,
+    COALESCE(a.transaction_days, 0)                           AS transaction_days
+  FROM week_spine s
+  LEFT JOIN weekly_activity a
+    ON a.nmid = s.nmid
+   AND a.week_start = s.week_start
+  WHERE DATE_DIFF(s.week_start, s.first_week_start, WEEK(MONDAY)) >= 2
 ),
 
 with_lags AS (
