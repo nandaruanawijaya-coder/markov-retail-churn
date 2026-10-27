@@ -4,7 +4,7 @@ Scores each merchant using (prev_tier, current_tier) Markov state.
 
 Inputs:
   - scoring_query.sql   : pulls latest 2 weeks per merchant from BigQuery
-  - markov_analysis.csv : churn probabilities per (tenure_bucket, prev_tier, current_tier)
+  - markov_analysis.csv : churn probabilities per (segment, tenure_bucket, prev_tier, current_tier)
 
 Output:
   - BigQuery table : BQ_OUTPUT_TABLE (appended with snapshot_date = today)
@@ -30,6 +30,8 @@ from datetime import date
 import pandas as pd
 from google.cloud import bigquery
 
+from segments import BUCKET_TO_SEGMENT, TENURE_ORDER
+
 # ── Config ────────────────────────────────────────────────────────────────────
 PROJECT_ID     = "ledger-fcc1e"          # 👈 change this
 BQ_OUTPUT_TABLE = "retail_payment_base.merchant_churn_scores"  # 👈 change this
@@ -38,7 +40,6 @@ ANALYSIS_CSV   = Path(__file__).parent / "markov_analysis.csv"
 OUTPUT_CSV     = "merchant_scores.csv"
 
 TIER_LABEL_MAP = {0: "0", 1: "1-2", 2: "3-4", 3: "5-6", 4: "7"}
-TENURE_ORDER   = ["early", "growing", "mature", "veteran"]
 
 # BigQuery schema — ensures correct types on write
 BQ_SCHEMA = [
@@ -60,6 +61,7 @@ BQ_SCHEMA = [
     bigquery.SchemaField("churn_score",              "FLOAT"),
     bigquery.SchemaField("confident",                "BOOLEAN"),
     bigquery.SchemaField("risk_segment",             "STRING"),
+    bigquery.SchemaField("segment",                  "STRING"),
 ]
 
 
@@ -130,6 +132,7 @@ def score_merchants(
             "current_tier":             curr_label,
             "prev_tier":                prev_label,
             "tenure_bucket":            bucket,
+            "segment":                  row["segment"],
         }
 
         null_scores = {
@@ -180,6 +183,8 @@ def write_to_bigquery(client: bigquery.Client, df: pd.DataFrame):
     job_config = bigquery.LoadJobConfig(
         schema=BQ_SCHEMA,
         write_disposition=bigquery.WriteDisposition.WRITE_APPEND,  # append each snapshot
+        # lets the load add the `segment` column to an existing table
+        schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
     )
 
     job = client.load_table_from_dataframe(df, BQ_OUTPUT_TABLE, job_config=job_config)
@@ -211,10 +216,11 @@ def print_summary(df: pd.DataFrame):
             bar   = "█" * int(pct / 2)
             print(f"  {seg:<12} {count:>7,}  ({pct:>5.1f}%)  {bar}")
 
-    print("\nMean churn score (4w) by tenure bucket:")
+    print("\nMean churn score (4w) by segment and tenure bucket:")
     summary = scored.groupby("tenure_bucket")["churn_score"].agg(
         mean="mean", median="median", count="count"
     ).reindex(TENURE_ORDER)
+    summary.insert(0, "segment", [BUCKET_TO_SEGMENT[b] for b in summary.index])
     print(summary.to_string(float_format="{:.3f}".format))
 
     print("\nCurrent tier distribution (scored merchants):")

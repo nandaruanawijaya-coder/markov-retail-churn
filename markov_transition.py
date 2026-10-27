@@ -27,6 +27,8 @@ from pathlib import Path
 import pandas as pd
 from google.cloud import bigquery
 
+from segments import BUCKET_TO_SEGMENT, TENURE_ORDER
+
 # ── Config ────────────────────────────────────────────────────────────────────
 PROJECT_ID  = "ledger-fcc1e"   # 👈 change this
 SQL_FILE    = Path(__file__).parent / "transition_query.sql"
@@ -34,7 +36,6 @@ OUTPUT_CSV  = "markov_transitions.csv"
 
 TIER_LABELS  = ["0", "1-2", "3-4", "5-6", "7"]
 N            = 5
-TENURE_ORDER = ["early", "growing", "mature", "veteran"]
 
 
 # ── Load SQL ──────────────────────────────────────────────────────────────────
@@ -127,6 +128,7 @@ def main():
 
         df_matrix = build_transition_matrix(df_bucket)
         df_matrix.insert(0, "tenure_bucket", bucket)
+        df_matrix.insert(0, "segment", BUCKET_TO_SEGMENT[bucket])
 
         print_summary(bucket, df_matrix)
         all_results.append(df_matrix)
@@ -139,6 +141,7 @@ def main():
     print(f"   Shape: {df_out.shape[0]:,} rows "
           f"({N}×{N}×{N} states × {len(TENURE_ORDER)} buckets = "
           f"{N*N*N*len(TENURE_ORDER)} rows)")
+    print(f"   Segments: {', '.join(sorted(df_out['segment'].unique()))}")
 
 
 if __name__ == "__main__":
