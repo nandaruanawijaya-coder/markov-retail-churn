@@ -16,6 +16,7 @@ Output:
 Usage:
     python merchant_scoring.py
     python merchant_scoring.py --dry-run --analysis-csv markov_analysis.csv
+    python merchant_scoring.py --snapshot-date 2026-10-26
 
 Risk segments (based on 4-week churn score):
   critical  >= 75%
@@ -270,9 +271,14 @@ def main():
                         help="read matrices from a local CSV instead of BigQuery")
     parser.add_argument("--dry-run", action="store_true",
                         help="score and print the summary, but do not write anywhere")
+    parser.add_argument("--snapshot-date", type=date.fromisoformat,
+                        help="snapshot_date to write (YYYY-MM-DD, default: today); "
+                             "scheduled runs use Mondays")
     args = parser.parse_args()
 
-    snapshot_date = date.today()
+    snapshot_date = args.snapshot_date or date.today()
+    if snapshot_date.weekday() != 0:
+        print(f"  ⚠️  snapshot_date {snapshot_date} is not a Monday")
     client        = bigquery.Client(project=PROJECT_ID)
 
     query        = load_query(SQL_FILE)

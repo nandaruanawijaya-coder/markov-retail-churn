@@ -4,10 +4,10 @@ Reads transition matrices from markov_transitions.csv and computes for
 each (tenure_bucket, prev_tier, current_tier) starting state:
 
   1. Churn probability at 4, 8, 13, 26, 52 weeks (Monte Carlo)
-  2. Expected weeks until churn (3 consecutive Tier 0 weeks)
+  2. Expected weeks until churn (4 consecutive Tier 0 weeks)
   3. Confidence flag based on sample size
 
-Churn definition: 3 consecutive weeks with 0 settlement days.
+Churn definition: 4 consecutive weeks with 0 settlement days.
 The consecutive counter resets on any active week (re-eligible).
 
 State space: (prev_tier, current_tier) → next_tier
@@ -35,7 +35,7 @@ SIM_HORIZONS     = [4, 8, 13, 26, 52]
 SIM_N            = 10000
 SIM_SEED         = 42
 MIN_SAMPLES      = 50   # flag (prev, current) pairs with fewer observations
-CONSEC_THRESHOLD = 3    # consecutive Tier 0 weeks to confirm churn
+CONSEC_THRESHOLD = 4    # consecutive Tier 0 weeks to confirm churn
 MAX_WORKERS      = os.cpu_count() or 1
 
 

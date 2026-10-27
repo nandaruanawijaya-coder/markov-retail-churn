@@ -7,7 +7,7 @@ One image, two Cloud Run **Jobs**, each triggered by Cloud Scheduler:
 | `markov-matrices-monthly` | `--mode monthly` | 1st of month, 02:00 | Rebuild transitions, run Monte Carlo, upload matrices to `temp_amal.markov_analysis_v2` |
 | `merchant-scoring-weekly` | `--mode weekly` | Monday, 03:00 (10:00 WIB) | Score merchants against the matrices, append a snapshot to `temp_amal.merchant_churn_scores_v2` |
 
-Scoring is weekly because tiers come from the last complete Monday–Sunday week and churn is a 3-week-zero event; the matrices change slowly, so they are refreshed monthly.
+Scoring is weekly because tiers come from the last complete Monday–Sunday week and churn is a 4-week-zero event; the matrices change slowly, so they are refreshed monthly.
 
 ## Prerequisites
 - `gcloud` CLI installed and authenticated
