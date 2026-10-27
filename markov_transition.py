@@ -6,8 +6,8 @@ Matrix structure: (prev_tier, current_tier) -> next_tier
 This captures momentum — a merchant declining vs recovering in the same
 current tier will have different forward-looking churn probabilities.
 
-Churn definition: 3 consecutive weeks with 0 settlement days.
-  - Each zero-streak is independently capped at 3 weeks
+Churn definition: 4 consecutive weeks with 0 settlement days.
+  - Each zero-streak is independently capped at 4 weeks
   - Merchants are re-eligible after reactivation (gaps-and-islands)
   - Merchants with tenure < 2 weeks are excluded
 
