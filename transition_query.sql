@@ -1,10 +1,34 @@
 -- Weeks run Monday–Sunday. Only complete weeks are used (current week excluded).
+--
+-- Segments (a separate transition matrix is built for each):
+--   promo_2m_free : earliest-paid order has a free 2-month subscription SKU
+--   standard      : everything else
+-- Tenure buckets are per segment. Keep the CASE below in sync with segments.py
+-- and scoring_query.sql.
 
 WITH first_tx AS (
   -- one row per merchant: week of first settlement
   SELECT
     nmid,
     DATE_TRUNC(MIN(first_settlement_date), WEEK(MONDAY)) AS first_week_start
+  FROM `retail_payment_base.retail_order_delivery_funnel`
+  WHERE first_settlement_date IS NOT NULL
+  GROUP BY nmid
+),
+
+merchant_segment AS (
+  -- segment is decided by the merchant's earliest-paid order
+  SELECT
+    nmid,
+    IF(
+      ARRAY_AGG(
+        COALESCE(REGEXP_CONTAINS(product_sku, r'2months-free'), FALSE)
+        ORDER BY paid_date IS NULL, paid_date
+        LIMIT 1
+      )[OFFSET(0)],
+      'promo_2m_free',
+      'standard'
+    ) AS segment
   FROM `retail_payment_base.retail_order_delivery_funnel`
   WHERE first_settlement_date IS NOT NULL
   GROUP BY nmid
@@ -39,10 +63,13 @@ week_spine AS (
 base AS (
   SELECT
     s.nmid,
+    m.segment,
     s.week_start,
     DATE_DIFF(s.week_start, s.first_week_start, WEEK(MONDAY)) AS weeks_since_first_tx,
     COALESCE(a.transaction_days, 0)                           AS transaction_days
   FROM week_spine s
+  JOIN merchant_segment m
+    ON m.nmid = s.nmid
   LEFT JOIN weekly_activity a
     ON a.nmid = s.nmid
    AND a.week_start = s.week_start
@@ -52,6 +79,7 @@ base AS (
 with_lags AS (
   SELECT
     nmid,
+    segment,
     week_start,
     weeks_since_first_tx,
     transaction_days,
@@ -64,6 +92,7 @@ with_lags AS (
 tiered AS (
   SELECT
     nmid,
+    segment,
     week_start,
     weeks_since_first_tx,
 
@@ -104,12 +133,20 @@ tiered AS (
 tenure_bucketed AS (
   SELECT
     *,
-    CASE
-      WHEN weeks_since_first_tx BETWEEN 2  AND 4  THEN 'early'
-      WHEN weeks_since_first_tx BETWEEN 5  AND 12 THEN 'growing'
-      WHEN weeks_since_first_tx >= 13             THEN 'mature'
-      -- WHEN weeks_since_first_tx BETWEEN 13 AND 26 THEN 'mature'
-      -- WHEN weeks_since_first_tx >= 27             THEN 'veteran'
+    CASE segment
+      WHEN 'promo_2m_free' THEN
+        CASE
+          WHEN weeks_since_first_tx BETWEEN 2  AND 7  THEN 'promo_free_period'
+          WHEN weeks_since_first_tx BETWEEN 8  AND 12 THEN 'promo_post_free_early'
+          WHEN weeks_since_first_tx >= 13             THEN 'promo_post_free'
+        END
+      ELSE
+        CASE
+          WHEN weeks_since_first_tx BETWEEN 2  AND 4  THEN 'standard_early'
+          WHEN weeks_since_first_tx BETWEEN 5  AND 9  THEN 'standard_growing'
+          WHEN weeks_since_first_tx BETWEEN 10 AND 19 THEN 'standard_mature'
+          WHEN weeks_since_first_tx >= 20             THEN 'standard_veteran'
+        END
     END AS tenure_bucket
   FROM tiered
   WHERE prev_tier  IS NOT NULL
@@ -117,6 +154,7 @@ tenure_bucketed AS (
 )
 
 SELECT
+  segment,
   tenure_bucket,
   prev_tier,
   current_tier,
@@ -124,5 +162,5 @@ SELECT
   COUNT(*) AS transition_count
 FROM tenure_bucketed
 WHERE tenure_bucket IS NOT NULL
-GROUP BY tenure_bucket, prev_tier, current_tier, next_tier
-ORDER BY tenure_bucket, prev_tier, current_tier, next_tier
+GROUP BY segment, tenure_bucket, prev_tier, current_tier, next_tier
+ORDER BY segment, tenure_bucket, prev_tier, current_tier, next_tier

@@ -17,9 +17,14 @@ Requirements:
     pip install numpy pandas
 """
 
+import os
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
+
+from segments import BUCKET_TO_SEGMENT, SEGMENT_BUCKETS, TENURE_ORDER
 
 # ── Config ────────────────────────────────────────────────────────────────────
 INPUT_CSV        = Path(__file__).parent / "markov_transitions.csv"
@@ -31,8 +36,7 @@ SIM_N            = 10000
 SIM_SEED         = 42
 MIN_SAMPLES      = 50   # flag (prev, current) pairs with fewer observations
 CONSEC_THRESHOLD = 3    # consecutive Tier 0 weeks to confirm churn
-
-TENURE_ORDER = ["early", "growing", "mature", "veteran"]
+MAX_WORKERS      = os.cpu_count() or 1
 
 
 # ── Load transition data ──────────────────────────────────────────────────────
@@ -195,12 +199,33 @@ def simulate_expected_weeks(
 
 
 # ── Analyze one bucket ────────────────────────────────────────────────────────
-def analyze_bucket(name: str, df_bucket: pd.DataFrame) -> pd.DataFrame:
+def _analyze_cell(task):
+    """Simulate one (prev, curr) starting state. Top-level so it can run in a
+    worker process; every simulation seeds its own RNG, so results do not
+    depend on how cells are spread across processes."""
+    matrix, prev, curr = task
+    entry = matrix.get((prev, curr))
+
+    if entry is None:
+        return prev, curr, 0, False, {h: None for h in SIM_HORIZONS}, None
+
+    _, sample_n = entry
+    churn_probs = {
+        h: simulate_churn(matrix, prev, curr, n_steps=h)
+        for h in SIM_HORIZONS
+    }
+    exp_weeks = simulate_expected_weeks(matrix, prev, curr)
+    return prev, curr, sample_n, sample_n >= MIN_SAMPLES, churn_probs, exp_weeks
+
+
+def analyze_bucket(name: str, df_bucket: pd.DataFrame, executor) -> pd.DataFrame:
+    segment = BUCKET_TO_SEGMENT[name]
     print(f"\n{'='*65}")
-    print(f"  TENURE BUCKET: {name.upper()}")
+    print(f"  TENURE BUCKET: {name.upper()}  (segment: {segment})")
     print(f"{'='*65}")
 
     matrix = build_conditional_matrix(df_bucket)
+    tasks  = [(matrix, prev, curr) for prev in range(N) for curr in range(N)]
 
     horizon_header = "  ".join([f"P@{h}w" for h in SIM_HORIZONS])
     print(f"\n  {'prev -> curr':<20} {'E[wks churn]':>13}  {horizon_header}  {'n':>7}  conf")
@@ -208,50 +233,36 @@ def analyze_bucket(name: str, df_bucket: pd.DataFrame) -> pd.DataFrame:
 
     results = []
 
-    for prev in range(N):
-        for curr in range(N):
-            entry = matrix.get((prev, curr))
+    for prev, curr, sample_n, confident, churn_probs, exp_weeks in executor.map(
+        _analyze_cell, tasks
+    ):
+        label    = f"Tier {TIER_LABELS[prev]} -> Tier {TIER_LABELS[curr]}"
+        p_vals   = "  ".join(
+            f"{churn_probs[h]:>5.1%}" if churn_probs[h] is not None else f"{'N/A':>5}"
+            for h in SIM_HORIZONS
+        )
+        ew_str   = f"{exp_weeks:>12.1f}" if exp_weeks is not None else f"{'N/A':>12}"
+        conf_str = "ok" if confident else "low n"
 
-            if entry is None:
-                sample_n    = 0
-                confident   = False
-                churn_probs = {h: None for h in SIM_HORIZONS}
-                exp_weeks   = None
-            else:
-                _, sample_n = entry
-                confident   = sample_n >= MIN_SAMPLES
-                churn_probs = {
-                    h: simulate_churn(matrix, prev, curr, n_steps=h)
-                    for h in SIM_HORIZONS
-                }
-                exp_weeks = simulate_expected_weeks(matrix, prev, curr)
+        print(f"  {label:<20} {ew_str}  {p_vals}  {int(sample_n):>7,}  {conf_str}")
 
-            label    = f"Tier {TIER_LABELS[prev]} -> Tier {TIER_LABELS[curr]}"
-            p_vals   = "  ".join(
-                f"{churn_probs[h]:>5.1%}" if churn_probs[h] is not None else f"{'N/A':>5}"
+        results.append({
+            "segment":              segment,
+            "tenure_bucket":        name,
+            "prev_tier":            TIER_LABELS[prev],
+            "current_tier":         TIER_LABELS[curr],
+            "sample_n":             int(sample_n),
+            "confident":            confident,
+            "expected_weeks_churn": exp_weeks,
+            **{
+                f"churn_prob_{h}w": round(churn_probs[h], 4)
+                if churn_probs[h] is not None else None
                 for h in SIM_HORIZONS
-            )
-            ew_str   = f"{exp_weeks:>12.1f}" if exp_weeks is not None else f"{'N/A':>12}"
-            conf_str = "ok" if confident else "low n"
-
-            print(f"  {label:<20} {ew_str}  {p_vals}  {int(sample_n):>7,}  {conf_str}")
-
-            results.append({
-                "tenure_bucket":        name,
-                "prev_tier":            TIER_LABELS[prev],
-                "current_tier":         TIER_LABELS[curr],
-                "sample_n":             int(sample_n),
-                "confident":            confident,
-                "expected_weeks_churn": exp_weeks,
-                **{
-                    f"churn_prob_{h}w": round(churn_probs[h], 4)
-                    if churn_probs[h] is not None else None
-                    for h in SIM_HORIZONS
-                },
-                # primary score = 4-week churn probability
-                "churn_score": round(churn_probs[4], 4)
-                    if churn_probs[4] is not None else None,
-            })
+            },
+            # primary score = 4-week churn probability
+            "churn_score": round(churn_probs[4], 4)
+                if churn_probs[4] is not None else None,
+        })
 
     return pd.DataFrame(results)
 
@@ -261,29 +272,36 @@ def main():
     df_raw = load_transitions(INPUT_CSV)
 
     all_results = []
-    for bucket in TENURE_ORDER:
-        df_bucket = df_raw[df_raw["tenure_bucket"] == bucket]
-        if df_bucket.empty:
-            print(f"[{bucket}] No data, skipping.")
-            continue
-        df = analyze_bucket(bucket, df_bucket)
-        all_results.append(df)
+    print(f"Running simulations on {MAX_WORKERS} worker process(es)")
+    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        for bucket in TENURE_ORDER:
+            df_bucket = df_raw[df_raw["tenure_bucket"] == bucket]
+            if df_bucket.empty:
+                print(f"[{bucket}] No data, skipping.")
+                continue
+            df = analyze_bucket(bucket, df_bucket, executor)
+            all_results.append(df)
 
     df_all = pd.concat(all_results, ignore_index=True)
 
-    # Summary pivot: churn_score @ 4w (confident pairs only)
-    print(f"\n\n{'='*65}")
-    print("  SUMMARY -- Churn score @ 4w (confident pairs only)")
-    print(f"{'='*65}")
+    # Summary pivot per segment: churn_score @ 4w (confident pairs only)
     confident = df_all[df_all["confident"]].copy()
     confident["state"] = (
         "Tier " + confident["prev_tier"] +
         " -> Tier " + confident["current_tier"]
     )
-    pivot = confident.pivot(
-        index="state", columns="tenure_bucket", values="churn_score"
-    ).reindex(columns=TENURE_ORDER)
-    print(pivot.to_string(float_format="{:.1%}".format, na_rep="--"))
+    for segment, buckets in SEGMENT_BUCKETS.items():
+        print(f"\n\n{'='*65}")
+        print(f"  SUMMARY [{segment}] -- Churn score @ 4w (confident pairs only)")
+        print(f"{'='*65}")
+        seg_df = confident[confident["segment"] == segment]
+        if seg_df.empty:
+            print("  (no data)")
+            continue
+        pivot = seg_df.pivot(
+            index="state", columns="tenure_bucket", values="churn_score"
+        ).reindex(columns=buckets)
+        print(pivot.to_string(float_format="{:.1%}".format, na_rep="--"))
 
     df_all.to_csv(OUTPUT_CSV, index=False)
     print(f"\nResults saved to: {OUTPUT_CSV}")

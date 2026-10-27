@@ -33,6 +33,7 @@ BQ_SCHEMA = [
     bigquery.SchemaField("churn_prob_26w",         "FLOAT"),
     bigquery.SchemaField("churn_prob_52w",         "FLOAT"),
     bigquery.SchemaField("churn_score",            "FLOAT"),
+    bigquery.SchemaField("segment",                "STRING"),
 ]
 
 
@@ -48,6 +49,7 @@ def main():
     df["confident"]  = df["confident"].astype("bool")
     df["prev_tier"]    = df["prev_tier"].astype("str")
     df["current_tier"] = df["current_tier"].astype("str")
+    df["segment"]      = df["segment"].astype("str")
     print(f"  -> {len(df):,} rows loaded")
 
     # Write to BigQuery (overwrite each time)
