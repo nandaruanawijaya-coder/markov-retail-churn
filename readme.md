@@ -2,6 +2,34 @@
 
 Markov Chain churn scoring pipeline for QRIS Soundbox merchants. Runs as two scheduled Cloud Run Jobs: matrices refreshed monthly, merchants scored weekly.
 
+## How It Works (the simple version)
+
+Think of it like a **weather forecast for merchants**.
+
+**The matrix = the weather record book.**
+Each week we label a merchant by how many days they had transactions: 0 days, 1–2, 3–4, 5–6, or all 7 (these are the "tiers"). We then look at what merchants did in the past:
+*"Last week they were a 3–4 day merchant, this week they dropped to 0 days. What happened the week after?"*
+Across hundreds of thousands of real merchant-weeks, we count how often the next week was 0 days, 1–2 days, and so on. That table of odds is the **transition matrix**. It's just like a weather book that says *"yesterday rainy + today cloudy → 60% sunny tomorrow."*
+
+We keep a separate book for each group of merchants (the segment and tenure bucket), because new merchants, veterans and the free-subscription merchants don't behave the same way, just like different cities have different weather.
+
+**The catch: the book only looks one week ahead.**
+But what we actually want to know is bigger: *"how likely is this merchant to **churn** (3 weeks in a row with 0 days) sometime in the next 4 weeks?"* You can't read that straight off a one-week table.
+
+**Monte Carlo simulation = playing out the future 10,000 times.**
+It's like asking *"will it rain 3 days in a row at some point in the next 4 days?"* when you only have a one-day forecast. So you:
+1. Start from the merchant's current state (last week + this week).
+2. Roll a weighted dice using the matrix to pick next week.
+3. Repeat from the new state, week after week.
+4. Check if 3 zero-day weeks happened in a row.
+
+Do that 10,000 times, and count how many of the pretend futures ended in churn. If 2,000 of them did, the churn probability is 20%. The same simulation gives the other horizons (8, 13, 26 and 52 weeks) and the expected number of weeks until churn.
+
+**Scoring = looking up the merchant in the results.**
+Every week we check each merchant's latest state, find the matching row in the simulation results, and attach its churn probability. The 4-week probability becomes the `churn_score`, which is then bucketed into risk segments (critical, very high, high, medium, low, very low).
+
+Why monthly and weekly? The matrices and simulation are the heavy part, and the odds barely move from month to month, so we redo them **monthly**. Looking up each merchant's current state is cheap, and their state changes every week, so we score **weekly**.
+
 ## Pipeline Steps
 **Monthly** (`python pipeline.py --mode monthly`)
 1. **Build transition matrices** — Queries BigQuery for merchant state transitions
