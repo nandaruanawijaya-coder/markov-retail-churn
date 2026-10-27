@@ -1,4 +1,4 @@
-google-cloud-bigquery==7.15.0
+google-cloud-bigquery==3.41.0
 pandas==2.2.0
 numpy==1.26.4
 db-dtypes==1.2.0
